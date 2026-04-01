@@ -351,6 +351,8 @@ async def dialer_endpoint(request: Request):
             badge = '<span style="background:#1d4ed8;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📞 Discando...</span>'
         elif status == "atendeu":
             badge = '<span style="background:#15803d;color:white;padding:3px 12px;border-radius:12px;font-size:13px">✅ Atendeu</span>'
+        elif "qualificado" in status:
+            badge = '<span style="background:#15803d;color:white;padding:3px 12px;border-radius:12px;font-size:13px">🏆 Qualificado</span>'
         elif status == "caixa_postal":
             badge = '<span style="background:#78350f;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📱 Caixa postal</span>'
         elif status == "nao_atendeu":
@@ -720,11 +722,29 @@ async def lead_endpoint(request: Request):
     with open(LEADS_FILE, "w") as f:
         json.dump(leads, f, ensure_ascii=False, indent=2)
 
+    # Atualizar status no discador pelo nome (match parcial)
+    nome_lower = nome.lower()
+    for c in CONTATOS_DIALER:
+        if nome_lower in c["nome"].lower() or c["nome"].lower() in nome_lower:
+            if status == "interesse_confirmado":
+                CAMPAIGN_STATUS[c["numero"]] = "qualificado ✅"
+                print(f"[DIALER] {c['nome']} marcado como qualificado — não será chamado novamente")
+            elif status == "sem_interesse":
+                CAMPAIGN_STATUS[c["numero"]] = "sem_interesse"
+                print(f"[DIALER] {c['nome']} marcado como sem interesse — não será chamado novamente")
+            break
+
     # Disparar SMS se interesse confirmado
     sms_ok = False
     if status == "interesse_confirmado" and produto:
-        sms_ok = enviar_sms("+5511991986241", nome, produto)
-        print(f"[SMS] Enviado: {sms_ok}")
+        # Buscar número do contato no dialer
+        telefone_lead = "+5511991986241"  # fallback demo
+        for c in CONTATOS_DIALER:
+            if nome_lower in c["nome"].lower() or c["nome"].lower() in nome_lower:
+                telefone_lead = c["numero"]
+                break
+        sms_ok = enviar_sms(telefone_lead, nome, produto)
+        print(f"[SMS] Enviado para {telefone_lead}: {sms_ok}")
 
     return JSONResponse({
         "sucesso": True,
