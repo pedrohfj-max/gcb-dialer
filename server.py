@@ -20,6 +20,58 @@ from mcp.server.fastmcp import FastMCP
 TELNYX_API_KEY = os.environ.get("TELNYX_API_KEY", "")
 TELNYX_MESSAGING_PROFILE = os.environ.get("TELNYX_MESSAGING_PROFILE", "40019d29-dc9e-44d7-b761-f1c2172ab44f")
 SMS_FROM = "GCBInvest"
+HUBSPOT_TOKEN = os.environ.get("HUBSPOT_TOKEN", "")
+
+
+def criar_lead_hubspot(nome: str, telefone: str, produto: str, horario: str) -> bool:
+    """Cria contato + deal no HubSpot quando lead é qualificado."""
+    if not HUBSPOT_TOKEN:
+        print("[HUBSPOT] Token não configurado, pulando")
+        return False
+    headers = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
+    nome_parts = nome.strip().split(" ", 1)
+    primeiro = nome_parts[0]
+    sobrenome = nome_parts[1] if len(nome_parts) > 1 else ""
+
+    contact_id = None
+    try:
+        payload = json.dumps({"properties": {
+            "firstname": primeiro, "lastname": sobrenome, "phone": telefone,
+            "hs_lead_status": "IN_PROGRESS",
+            "notes_last_contacted": f"Qualificado pela Clara — produto: {produto} | horário: {horario}",
+        }}).encode()
+        req = urllib.request.Request("https://api.hubapi.com/crm/v3/objects/contacts",
+            data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=8) as r:
+            contact_id = json.load(r).get("id")
+            print(f"[HUBSPOT] Contato criado ID {contact_id}")
+    except urllib.error.HTTPError as e:
+        if e.code != 409:
+            print(f"[HUBSPOT] Erro contato: {e.code}")
+            return False
+
+    try:
+        payload2 = json.dumps({"properties": {
+            "dealname": f"{nome} — {produto}",
+            "dealstage": "appointmentscheduled",
+            "pipeline": "default",
+            "description": f"Lead qualificado pela Clara. Produto: {produto}. Horário: {horario}.",
+        }}).encode()
+        req2 = urllib.request.Request("https://api.hubapi.com/crm/v3/objects/deals",
+            data=payload2, headers=headers, method="POST")
+        with urllib.request.urlopen(req2, timeout=8) as r:
+            deal_id = json.load(r).get("id")
+            print(f"[HUBSPOT] Deal criado ID {deal_id}")
+
+        if contact_id and deal_id:
+            assoc = json.dumps({"inputs": [{"from": {"id": deal_id}, "to": {"id": contact_id}, "type": "deal_to_contact"}]}).encode()
+            req3 = urllib.request.Request("https://api.hubapi.com/crm/v3/associations/deals/contacts/batch/create",
+                data=assoc, headers=headers, method="POST")
+            urllib.request.urlopen(req3, timeout=5)
+        return True
+    except Exception as e:
+        print(f"[HUBSPOT] Erro deal: {e}")
+        return False
 
 # Mapa CPF → número celular (para demo)
 TELEFONES = {
@@ -994,22 +1046,25 @@ async def lead_endpoint(request: Request):
                 print(f"[DIALER] {c['nome']} em cooldown por {dias} dias")
             break
 
-    # Disparar SMS se interesse confirmado
+    # Disparar SMS + HubSpot se interesse confirmado
     sms_ok = False
+    hubspot_ok = False
     if status == "interesse_confirmado" and produto:
-        # Buscar número do contato no dialer
-        telefone_lead = "+5511991986241"  # fallback demo
+        telefone_lead = "+5511991986241"
         for c in CONTATOS_DIALER:
             if nome_lower in c["nome"].lower() or c["nome"].lower() in nome_lower:
                 telefone_lead = c["numero"]
                 break
         sms_ok = enviar_sms(telefone_lead, nome, produto)
         print(f"[SMS] Enviado para {telefone_lead}: {sms_ok}")
+        hubspot_ok = criar_lead_hubspot(nome, telefone_lead, produto, horario)
+        print(f"[HUBSPOT] Lead criado: {hubspot_ok}")
 
     return JSONResponse({
         "sucesso": True,
         "mensagem": f"Lead {nome} registrado.",
-        "sms_enviado": sms_ok
+        "sms_enviado": sms_ok,
+        "hubspot": hubspot_ok if status == "interesse_confirmado" else "n/a"
     })
 
 
