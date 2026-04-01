@@ -303,11 +303,13 @@ CAMPAIGN_RETRIES = {}  # numero -> tentativas feitas
 CAMPAIGN_PAUSED = False
 CAMPAIGN_CONFIG = {
     "max_retries": 3,
-    "retry_interval": 120,  # segundos
-    "intervalo_chamadas": 8,  # segundos entre chamadas
+    "retry_interval": 120,   # segundos entre tentativas
+    "intervalo_chamadas": 8, # segundos entre chamadas
     "max_simultaneas": 3,    # máximo de chamadas ao mesmo tempo
+    "cooldown_dias": 7,      # dias sem ligar após sem_interesse ou esgotado
 }
-ACTIVE_CALLS = 0  # contador de chamadas ativas
+ACTIVE_CALLS = 0        # contador de chamadas ativas
+COOLDOWN_UNTIL = {}     # numero -> timestamp de quando pode ligar de novo
 NOTIFICATIONS = []  # lista de notificações para o pop-up
 
 
@@ -368,6 +370,8 @@ async def dialer_endpoint(request: Request):
             badge = f'<span style="background:#1d4ed8;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📞 {status.capitalize()}</span>'
         elif status.startswith("esgotado"):
             badge = f'<span style="background:#4b5563;color:white;padding:3px 12px;border-radius:12px;font-size:13px">🚫 {status.capitalize()}</span>'
+        elif status.startswith("cooldown"):
+            badge = f'<span style="background:#7c3aed;color:white;padding:3px 12px;border-radius:12px;font-size:13px">⏱ {status.capitalize()}</span>'
         else:
             badge = f'<span style="background:#334155;color:#94a3b8;padding:3px 12px;border-radius:12px;font-size:13px">{status}</span>'
 
@@ -446,6 +450,11 @@ async def dialer_endpoint(request: Request):
       <div>
         <label style="color:#64748b;font-size:12px;display:block;margin-bottom:4px">CHAMADAS SIMULTÂNEAS</label>
         <input type="number" name="max_simultaneas" value="{CAMPAIGN_CONFIG['max_simultaneas']}" min="1" max="10"
+          style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:8px 12px;width:80px;font-size:15px">
+      </div>
+      <div>
+        <label style="color:#64748b;font-size:12px;display:block;margin-bottom:4px">COOLDOWN (dias)</label>
+        <input type="number" name="cooldown_dias" value="{CAMPAIGN_CONFIG['cooldown_dias']}" min="1" max="90"
           style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:8px 12px;width:80px;font-size:15px">
       </div>
       <button type="submit" style="background:#475569;color:white;border:none;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">💾 Salvar</button>
@@ -596,8 +605,16 @@ async def dialer_start(request: Request):
             while CAMPAIGN_PAUSED:
                 time.sleep(1)
 
-            # Pular já finalizados
-            if CAMPAIGN_STATUS.get(c["numero"]) in ("atendeu", "sem_interesse"):
+            # Pular já finalizados ou qualificados
+            if CAMPAIGN_STATUS.get(c["numero"]) in ("atendeu", "sem_interesse", "qualificado ✅"):
+                continue
+
+            # Verificar cooldown
+            cooldown_end = COOLDOWN_UNTIL.get(c["numero"], 0)
+            if time.time() < cooldown_end:
+                restante = int((cooldown_end - time.time()) / 3600)
+                CAMPAIGN_STATUS[c["numero"]] = f"cooldown ({restante}h)"
+                print(f"[COOLDOWN] {c['nome']} em cooldown por mais {restante}h")
                 continue
 
             tentativa = CAMPAIGN_RETRIES.get(c["numero"], 0) + 1
@@ -623,6 +640,10 @@ async def dialer_start(request: Request):
                     break
                 if tentativas >= CAMPAIGN_CONFIG["max_retries"]:
                     CAMPAIGN_STATUS[numero] = f"esgotado ({tentativas} tentativas)"
+                    # Aplicar cooldown
+                    dias = CAMPAIGN_CONFIG["cooldown_dias"]
+                    COOLDOWN_UNTIL[numero] = time.time() + (dias * 86400)
+                    print(f"[COOLDOWN] {numero} em cooldown por {dias} dias após esgotar tentativas")
                     break
 
                 # Retry se não atendeu ou caixa postal
@@ -807,6 +828,7 @@ async def dialer_config(request: Request):
         CAMPAIGN_CONFIG["retry_interval"] = int(form.get("retry_interval", 120))
         CAMPAIGN_CONFIG["intervalo_chamadas"] = int(form.get("intervalo_chamadas", 8))
         CAMPAIGN_CONFIG["max_simultaneas"] = int(form.get("max_simultaneas", 3))
+        CAMPAIGN_CONFIG["cooldown_dias"] = int(form.get("cooldown_dias", 7))
     except ValueError:
         pass
     return RedirectResponse("/dialer", status_code=303)
@@ -924,7 +946,11 @@ async def lead_endpoint(request: Request):
                 print(f"[DIALER] {c['nome']} marcado como qualificado — não será chamado novamente")
             elif status == "sem_interesse":
                 CAMPAIGN_STATUS[c["numero"]] = "sem_interesse"
-                print(f"[DIALER] {c['nome']} marcado como sem interesse — não será chamado novamente")
+                # Aplicar cooldown
+                import time as _t
+                dias = CAMPAIGN_CONFIG["cooldown_dias"]
+                COOLDOWN_UNTIL[c["numero"]] = _t.time() + (dias * 86400)
+                print(f"[DIALER] {c['nome']} em cooldown por {dias} dias")
             break
 
     # Disparar SMS se interesse confirmado
