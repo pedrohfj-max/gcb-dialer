@@ -34,21 +34,38 @@ def criar_lead_hubspot(nome: str, telefone: str, produto: str, horario: str) -> 
     sobrenome = nome_parts[1] if len(nome_parts) > 1 else ""
 
     contact_id = None
+    # Primeiro: buscar se já existe pelo telefone
     try:
-        payload = json.dumps({"properties": {
-            "firstname": primeiro, "lastname": sobrenome, "phone": telefone,
-            "hs_lead_status": "IN_PROGRESS",
-            "hs_content_membership_notes": f"Qualificado pela Clara — produto: {produto} | horário: {horario}",
-        }}).encode()
-        req = urllib.request.Request("https://api.hubapi.com/crm/v3/objects/contacts",
-            data=payload, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=8) as r:
-            contact_id = json.load(r).get("id")
-            print(f"[HUBSPOT] Contato criado ID {contact_id}")
-    except urllib.error.HTTPError as e:
-        if e.code != 409:
-            print(f"[HUBSPOT] Erro contato: {e.code}")
-            return False
+        search_payload = json.dumps({
+            "filterGroups": [{"filters": [{"propertyName": "phone", "operator": "EQ", "value": telefone}]}],
+            "properties": ["firstname", "lastname", "phone"],
+            "limit": 1
+        }).encode()
+        req_search = urllib.request.Request("https://api.hubapi.com/crm/v3/objects/contacts/search",
+            data=search_payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req_search, timeout=8) as r:
+            results = json.load(r).get("results", [])
+            if results:
+                contact_id = results[0]["id"]
+                print(f"[HUBSPOT] Contato existente encontrado ID {contact_id}")
+    except Exception as e:
+        print(f"[HUBSPOT] Erro busca: {e}")
+
+    if not contact_id:
+        try:
+            payload = json.dumps({"properties": {
+                "firstname": primeiro, "lastname": sobrenome, "phone": telefone,
+                "hs_lead_status": "IN_PROGRESS",
+            }}).encode()
+            req = urllib.request.Request("https://api.hubapi.com/crm/v3/objects/contacts",
+                data=payload, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=8) as r:
+                contact_id = json.load(r).get("id")
+                print(f"[HUBSPOT] Contato criado ID {contact_id}")
+        except urllib.error.HTTPError as e:
+            if e.code != 409:
+                print(f"[HUBSPOT] Erro contato: {e.code}")
+                return False
 
     try:
         payload2 = json.dumps({"properties": {
@@ -199,6 +216,39 @@ PRODUTOS = [
 ]
 
 LEADS_FILE = os.path.join(os.path.dirname(__file__), "leads.json")
+STATE_FILE = os.path.join(os.path.dirname(__file__), "campaign_state.json")
+
+
+def save_state():
+    """Persiste o estado da campanha em arquivo."""
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump({
+                "contatos": CONTATOS_DIALER,
+                "status": CAMPAIGN_STATUS,
+                "retries": CAMPAIGN_RETRIES,
+                "cooldown": {k: v for k, v in COOLDOWN_UNTIL.items()},
+                "active_calls": ACTIVE_CALLS,
+            }, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[STATE] Erro ao salvar: {e}")
+
+
+def load_state():
+    """Carrega estado da campanha do arquivo."""
+    try:
+        with open(STATE_FILE) as f:
+            state = json.load(f)
+        CONTATOS_DIALER.clear()
+        CONTATOS_DIALER.extend(state.get("contatos", []))
+        CAMPAIGN_STATUS.update(state.get("status", {}))
+        CAMPAIGN_RETRIES.update(state.get("retries", {}))
+        COOLDOWN_UNTIL.update({k: float(v) for k, v in state.get("cooldown", {}).items()})
+        print(f"[STATE] Carregado: {len(CONTATOS_DIALER)} contatos")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"[STATE] Erro ao carregar: {e}")
 
 # ---------------------------------------------------------------------------
 # MCP Server
@@ -377,6 +427,7 @@ async def dialer_paste(request: Request):
     CONTATOS_DIALER.clear()
     CAMPAIGN_STATUS.clear()
     CAMPAIGN_RETRIES.clear()
+    COOLDOWN_UNTIL.clear()
 
     for line in text.splitlines():
         line = line.strip()
@@ -391,6 +442,7 @@ async def dialer_paste(request: Request):
             if nome and numero:
                 CONTATOS_DIALER.append({"nome": nome, "numero": numero})
 
+    save_state()
     return RedirectResponse("/dialer", status_code=303)
 
 
@@ -421,6 +473,7 @@ async def dialer_upload(request: Request):
         if nome and numero:
             CONTATOS_DIALER.append({"nome": nome.strip(), "numero": numero})
 
+    save_state()
     return RedirectResponse("/dialer", status_code=303)
 
 
@@ -772,6 +825,7 @@ async def dialer_start(request: Request):
             if not ok:
                 CAMPAIGN_STATUS[c["numero"]] = "erro"
 
+            save_state()
             time.sleep(8)
 
         # Processar retries
@@ -840,17 +894,26 @@ async def dialer_webhook(request: Request):
         if to_number in CAMPAIGN_STATUS:
             CAMPAIGN_STATUS[to_number] = "caixa_postal"
             print(f"[AMD] Caixa postal detectada para {to_number}")
+            save_state()
 
     # Se não atendeu
     elif call_status in ("no-answer", "busy", "failed", "canceled"):
         if to_number in CAMPAIGN_STATUS:
             if CAMPAIGN_STATUS[to_number] != "caixa_postal":
                 CAMPAIGN_STATUS[to_number] = "nao_atendeu"
+                save_state()
+
+    # Se atendeu (human)
+    elif call_status == "in-progress" and amd_result in ("human", ""):
+        if to_number in CAMPAIGN_STATUS:
+            CAMPAIGN_STATUS[to_number] = "em_chamada"
+            save_state()
 
     # Decrementar chamadas ativas quando encerrar
     if call_status in ("completed", "no-answer", "busy", "failed", "canceled"):
         global ACTIVE_CALLS
         ACTIVE_CALLS = max(0, ACTIVE_CALLS - 1)
+        save_state()
 
     return JSONResponse({"ok": True})
 
@@ -1186,6 +1249,9 @@ if __name__ == "__main__":
     print(f"🚀 MCP Server GCB Investimentos iniciando (transport: {transport})...")
     print("   Acesse: http://localhost:8000/sse")
     print("   SMS endpoint: http://localhost:8000/sms")
+
+    # Carregar estado salvo ao iniciar
+    load_state()
 
     if transport == "sse":
         mcp._custom_starlette_routes = [
