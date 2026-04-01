@@ -945,15 +945,11 @@ async def dialer_webhook(request: Request):
             current = CAMPAIGN_STATUS.get(matched_number, "")
             already_qualified = "qualificado" in current or current == "sem_interesse"
             if not already_qualified:
-                # Usar duração pra distinguir atendeu de não atendeu
-                # Chamadas atendidas duram > 10 segundos
-                start = CALL_START_TIME.get(matched_number, 0)
-                duration = time.time() - start if start else 0
-                call_duration = body.get("CallDuration", "0")
+                # Usar duração enviada pela Telnyx pra distinguir atendeu de não atendeu
                 try:
-                    duration_sec = int(call_duration)
+                    duration_sec = int(body.get("CallDuration", 0))
                 except:
-                    duration_sec = int(duration)
+                    duration_sec = 0
 
                 print(f"[WEBHOOK] Duração da chamada: {duration_sec}s")
 
