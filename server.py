@@ -307,6 +307,9 @@ CAMPAIGN_CONFIG = {
     "intervalo_chamadas": 8, # segundos entre chamadas
     "max_simultaneas": 3,    # máximo de chamadas ao mesmo tempo
     "cooldown_dias": 7,      # dias sem ligar após sem_interesse ou esgotado
+    "horario_inicio": 9,     # hora de início (9h)
+    "horario_fim": 20,       # hora de fim (20h)
+    "timezone": "America/Sao_Paulo",
 }
 ACTIVE_CALLS = 0        # contador de chamadas ativas
 COOLDOWN_UNTIL = {}     # numero -> timestamp de quando pode ligar de novo
@@ -372,6 +375,8 @@ async def dialer_endpoint(request: Request):
             badge = f'<span style="background:#4b5563;color:white;padding:3px 12px;border-radius:12px;font-size:13px">🚫 {status.capitalize()}</span>'
         elif status.startswith("cooldown"):
             badge = f'<span style="background:#7c3aed;color:white;padding:3px 12px;border-radius:12px;font-size:13px">⏱ {status.capitalize()}</span>'
+        elif "horário" in status:
+            badge = f'<span style="background:#0369a1;color:white;padding:3px 12px;border-radius:12px;font-size:13px">🕘 {status.capitalize()}</span>'
         else:
             badge = f'<span style="background:#334155;color:#94a3b8;padding:3px 12px;border-radius:12px;font-size:13px">{status}</span>'
 
@@ -455,6 +460,16 @@ async def dialer_endpoint(request: Request):
       <div>
         <label style="color:#64748b;font-size:12px;display:block;margin-bottom:4px">COOLDOWN (dias)</label>
         <input type="number" name="cooldown_dias" value="{CAMPAIGN_CONFIG['cooldown_dias']}" min="1" max="90"
+          style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:8px 12px;width:80px;font-size:15px">
+      </div>
+      <div>
+        <label style="color:#64748b;font-size:12px;display:block;margin-bottom:4px">INÍCIO (hora)</label>
+        <input type="number" name="horario_inicio" value="{CAMPAIGN_CONFIG['horario_inicio']}" min="0" max="23"
+          style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:8px 12px;width:80px;font-size:15px">
+      </div>
+      <div>
+        <label style="color:#64748b;font-size:12px;display:block;margin-bottom:4px">FIM (hora)</label>
+        <input type="number" name="horario_fim" value="{CAMPAIGN_CONFIG['horario_fim']}" min="0" max="23"
           style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:8px 12px;width:80px;font-size:15px">
       </div>
       <button type="submit" style="background:#475569;color:white;border:none;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">💾 Salvar</button>
@@ -549,6 +564,19 @@ async def dialer_start(request: Request):
 
     CAMPAIGN_PAUSED = False
 
+    def dentro_horario():
+        """Verifica se está dentro do horário permitido."""
+        from datetime import datetime as _dt
+        import time as _t
+        try:
+            import zoneinfo
+            tz = zoneinfo.ZoneInfo(CAMPAIGN_CONFIG["timezone"])
+            agora = _dt.now(tz)
+        except Exception:
+            agora = _dt.now()
+        hora = agora.hour
+        return CAMPAIGN_CONFIG["horario_inicio"] <= hora < CAMPAIGN_CONFIG["horario_fim"]
+
     def fazer_ligacao(numero, nome):
         """Faz uma ligação e retorna True se foi enfileirada com sucesso."""
         global ACTIVE_CALLS
@@ -605,6 +633,12 @@ async def dialer_start(request: Request):
             while CAMPAIGN_PAUSED:
                 time.sleep(1)
 
+            # Esperar se fora do horário
+            while not dentro_horario():
+                CAMPAIGN_STATUS[c["numero"]] = f"aguardando horário ({CAMPAIGN_CONFIG['horario_inicio']}h-{CAMPAIGN_CONFIG['horario_fim']}h)"
+                print(f"[HORÁRIO] Fora do horário permitido. Aguardando...")
+                time.sleep(60)
+
             # Pular já finalizados ou qualificados
             if CAMPAIGN_STATUS.get(c["numero"]) in ("atendeu", "sem_interesse", "qualificado ✅"):
                 continue
@@ -650,6 +684,11 @@ async def dialer_start(request: Request):
                 if status in ("nao_atendeu", "caixa_postal", "erro"):
                     while CAMPAIGN_PAUSED:
                         time.sleep(1)
+
+                    # Verificar horário antes do retry
+                    while not dentro_horario():
+                        CAMPAIGN_STATUS[numero] = f"aguardando horário ({CAMPAIGN_CONFIG['horario_inicio']}h-{CAMPAIGN_CONFIG['horario_fim']}h)"
+                        time.sleep(60)
 
                     tentativa = tentativas + 1
                     CAMPAIGN_RETRIES[numero] = tentativa
@@ -829,6 +868,8 @@ async def dialer_config(request: Request):
         CAMPAIGN_CONFIG["intervalo_chamadas"] = int(form.get("intervalo_chamadas", 8))
         CAMPAIGN_CONFIG["max_simultaneas"] = int(form.get("max_simultaneas", 3))
         CAMPAIGN_CONFIG["cooldown_dias"] = int(form.get("cooldown_dias", 7))
+        CAMPAIGN_CONFIG["horario_inicio"] = int(form.get("horario_inicio", 9))
+        CAMPAIGN_CONFIG["horario_fim"] = int(form.get("horario_fim", 20))
     except ValueError:
         pass
     return RedirectResponse("/dialer", status_code=303)
