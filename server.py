@@ -38,7 +38,7 @@ def criar_lead_hubspot(nome: str, telefone: str, produto: str, horario: str) -> 
         payload = json.dumps({"properties": {
             "firstname": primeiro, "lastname": sobrenome, "phone": telefone,
             "hs_lead_status": "IN_PROGRESS",
-            "notes_last_contacted": f"Qualificado pela Clara — produto: {produto} | horário: {horario}",
+            "hs_content_membership_notes": f"Qualificado pela Clara — produto: {produto} | horário: {horario}",
         }}).encode()
         req = urllib.request.Request("https://api.hubapi.com/crm/v3/objects/contacts",
             data=payload, headers=headers, method="POST")
