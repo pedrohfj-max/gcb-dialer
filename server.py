@@ -417,6 +417,7 @@ ACTIVE_CALLS = 0        # contador de chamadas ativas
 COOLDOWN_UNTIL = {}     # numero -> timestamp de quando pode ligar de novo
 NOTIFICATIONS = []      # lista de notificações para o pop-up
 CALLS_ANSWERED = set()  # números que atenderam (para distinguir de não atendeu)
+CALL_START_TIME = {}    # numero -> timestamp de quando a chamada foi iniciada
 
 
 async def dialer_paste(request: Request):
@@ -756,6 +757,7 @@ async def dialer_start(request: Request):
             time.sleep(2)
 
         ACTIVE_CALLS += 1
+        CALL_START_TIME[numero] = time.time()
         payload = js.dumps({
             "From": "+551151189954",
             "To": numero,
@@ -939,14 +941,26 @@ async def dialer_webhook(request: Request):
     # Chamada encerrada
     elif call_status == "completed":
         if matched_number:
-            if matched_number in CALLS_ANSWERED:
-                # Atendeu mas a Clara não registrou interesse ainda
-                current = CAMPAIGN_STATUS.get(matched_number, "")
-                if "discando" in current or "chamada" in current:
+            current = CAMPAIGN_STATUS.get(matched_number, "")
+            already_qualified = "qualificado" in current or current == "sem_interesse"
+            if not already_qualified:
+                # Usar duração pra distinguir atendeu de não atendeu
+                # Chamadas atendidas duram > 10 segundos
+                start = CALL_START_TIME.get(matched_number, 0)
+                duration = time.time() - start if start else 0
+                call_duration = body.get("CallDuration", "0")
+                try:
+                    duration_sec = int(call_duration)
+                except:
+                    duration_sec = int(duration)
+
+                print(f"[WEBHOOK] Duração da chamada: {duration_sec}s")
+
+                if matched_number in CALLS_ANSWERED or duration_sec > 10:
                     CAMPAIGN_STATUS[matched_number] = "atendeu"
-                save_state()
-            elif CAMPAIGN_STATUS.get(matched_number, "").startswith("discando"):
-                CAMPAIGN_STATUS[matched_number] = "nao_atendeu"
+                    print(f"[WEBHOOK] Marcado como ATENDEU (duração: {duration_sec}s)")
+                else:
+                    CAMPAIGN_STATUS[matched_number] = "nao_atendeu"
                 save_state()
 
     # Decrementar chamadas ativas quando encerrar
