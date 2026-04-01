@@ -299,6 +299,7 @@ async def sms_endpoint(request: Request):
 
 CONTATOS_DIALER = []  # preenchido via upload de CSV
 CAMPAIGN_STATUS = {}  # numero -> status
+CAMPAIGN_PAUSED = False  # controle de pausa
 
 
 async def dialer_upload(request: Request):
@@ -343,8 +344,12 @@ async def dialer_endpoint(request: Request):
             badge = '<span style="background:#1d4ed8;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📞 Discando...</span>'
         elif status == "atendeu":
             badge = '<span style="background:#15803d;color:white;padding:3px 12px;border-radius:12px;font-size:13px">✅ Atendeu</span>'
+        elif status == "nao_atendeu":
+            badge = '<span style="background:#92400e;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📵 Não atendeu</span>'
         elif status == "erro":
-            badge = '<span style="background:#b91c1c;color:white;padding:3px 12px;border-radius:12px;font-size:13px">❌ Não atendeu</span>'
+            badge = '<span style="background:#b91c1c;color:white;padding:3px 12px;border-radius:12px;font-size:13px">❌ Erro</span>'
+        elif status == "sem_interesse":
+            badge = '<span style="background:#6b21a8;color:white;padding:3px 12px;border-radius:12px;font-size:13px">👋 Sem interesse</span>'
         else:
             badge = f'<span style="background:#334155;color:#94a3b8;padding:3px 12px;border-radius:12px;font-size:13px">{status}</span>'
 
@@ -396,7 +401,10 @@ async def dialer_endpoint(request: Request):
       <h1>🤖 GCB — Discador Inteligente</h1>
       <p class="subtitle">Clara liga automaticamente e qualifica cada investidor</p>
     </div>
-    {'<a href="/dialer/start" class="btn">▶ Iniciar Campanha</a>' if CONTATOS_DIALER else '<button class="btn" disabled>▶ Iniciar Campanha</button>'}
+    <div style="display:flex;gap:10px">
+      {'<a href="/dialer/start" class="btn">▶ Iniciar Campanha</a>' if CONTATOS_DIALER else '<button class="btn" disabled>▶ Iniciar Campanha</button>'}
+      {'<a href="/dialer/pause" class="btn" style="background:#f59e0b">⏸ Pausar</a>' if not CAMPAIGN_PAUSED else '<a href="/dialer/pause" class="btn" style="background:#22c55e">▶ Retomar</a>'}
+    </div>
   </div>
 
   <div class="upload-area">
@@ -442,13 +450,24 @@ async def dialer_endpoint(request: Request):
 
 async def dialer_start(request: Request):
     """Dispara as ligações em background."""
+    global CAMPAIGN_PAUSED
     import threading
     from starlette.responses import RedirectResponse
+
+    CAMPAIGN_PAUSED = False
 
     def run_campaign():
         import urllib.request as ur
         import json as js, time
         for c in list(CONTATOS_DIALER):
+            # Esperar se pausado
+            while CAMPAIGN_PAUSED:
+                time.sleep(1)
+
+            # Pular contatos já processados
+            if CAMPAIGN_STATUS.get(c["numero"]) in ("atendeu", "sem_interesse"):
+                continue
+
             CAMPAIGN_STATUS[c["numero"]] = "discando"
             payload = js.dumps({
                 "From": "+551151189954",
@@ -473,12 +492,20 @@ async def dialer_start(request: Request):
                     if result.get("status") in ("queued", "ringing"):
                         CAMPAIGN_STATUS[c["numero"]] = "atendeu"
                     else:
-                        CAMPAIGN_STATUS[c["numero"]] = "discando"
+                        CAMPAIGN_STATUS[c["numero"]] = "nao_atendeu"
             except Exception:
                 CAMPAIGN_STATUS[c["numero"]] = "erro"
             time.sleep(6)
 
     threading.Thread(target=run_campaign, daemon=True).start()
+    return RedirectResponse("/dialer", status_code=303)
+
+
+async def dialer_pause(request: Request):
+    """Pausa ou retoma a campanha."""
+    global CAMPAIGN_PAUSED
+    from starlette.responses import RedirectResponse
+    CAMPAIGN_PAUSED = not CAMPAIGN_PAUSED
     return RedirectResponse("/dialer", status_code=303)
 
 
@@ -603,6 +630,7 @@ if __name__ == "__main__":
             Route("/dashboard", dashboard_endpoint, methods=["GET"]),
             Route("/dialer", dialer_endpoint, methods=["GET"]),
             Route("/dialer/start", dialer_start, methods=["GET"]),
+            Route("/dialer/pause", dialer_pause, methods=["GET"]),
             Route("/dialer/upload", dialer_upload, methods=["POST"]),
         ]
         # Build the Starlette app and run with uvicorn on 0.0.0.0
