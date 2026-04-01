@@ -882,6 +882,7 @@ async def dialer_start(request: Request):
 
 async def dialer_webhook(request: Request):
     """Recebe eventos de status das chamadas (AMD, atendida, encerrada, etc)."""
+    import time
     try:
         # Telnyx envia como form ou JSON
         content_type = request.headers.get("content-type", "")
