@@ -344,6 +344,8 @@ async def dialer_endpoint(request: Request):
             badge = '<span style="background:#1d4ed8;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📞 Discando...</span>'
         elif status == "atendeu":
             badge = '<span style="background:#15803d;color:white;padding:3px 12px;border-radius:12px;font-size:13px">✅ Atendeu</span>'
+        elif status == "caixa_postal":
+            badge = '<span style="background:#78350f;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📱 Caixa postal</span>'
         elif status == "nao_atendeu":
             badge = '<span style="background:#92400e;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📵 Não atendeu</span>'
         elif status == "erro":
@@ -476,6 +478,8 @@ async def dialer_start(request: Request):
                 "MachineDetection": "Enable",
                 "AsyncAmd": True,
                 "DetectionMode": "Premium",
+                "StatusCallback": "https://gcb-dialer-production.up.railway.app/dialer/webhook",
+                "StatusCallbackMethod": "POST",
             }).encode()
             req = ur.Request(
                 "https://api.telnyx.com/v2/texml/ai_calls/2924083901620028790",
@@ -499,6 +503,40 @@ async def dialer_start(request: Request):
 
     threading.Thread(target=run_campaign, daemon=True).start()
     return RedirectResponse("/dialer", status_code=303)
+
+
+async def dialer_webhook(request: Request):
+    """Recebe eventos de status das chamadas (AMD, atendida, encerrada, etc)."""
+    try:
+        # Telnyx envia como form ou JSON
+        content_type = request.headers.get("content-type", "")
+        if "json" in content_type:
+            body = await request.json()
+        else:
+            form = await request.form()
+            body = dict(form)
+    except Exception:
+        body = {}
+
+    call_status = body.get("CallStatus", "")
+    to_number = body.get("To", "")
+    amd_result = body.get("AnsweredBy", "")  # machine / human / unknown
+
+    print(f"[WEBHOOK] To:{to_number} Status:{call_status} AMD:{amd_result}")
+
+    # Se caixa postal detectada — marcar e não deixar a Clara falar
+    if amd_result in ("machine_start", "machine_end_beep", "machine_end_silence", "machine_end_other", "fax"):
+        if to_number in CAMPAIGN_STATUS:
+            CAMPAIGN_STATUS[to_number] = "caixa_postal"
+            print(f"[AMD] Caixa postal detectada para {to_number}")
+
+    # Se não atendeu
+    elif call_status in ("no-answer", "busy", "failed", "canceled"):
+        if to_number in CAMPAIGN_STATUS:
+            if CAMPAIGN_STATUS[to_number] != "caixa_postal":
+                CAMPAIGN_STATUS[to_number] = "nao_atendeu"
+
+    return JSONResponse({"ok": True})
 
 
 async def dialer_pause(request: Request):
@@ -631,6 +669,7 @@ if __name__ == "__main__":
             Route("/dialer", dialer_endpoint, methods=["GET"]),
             Route("/dialer/start", dialer_start, methods=["GET"]),
             Route("/dialer/pause", dialer_pause, methods=["GET"]),
+            Route("/dialer/webhook", dialer_webhook, methods=["POST"]),
             Route("/dialer/upload", dialer_upload, methods=["POST"]),
         ]
         # Build the Starlette app and run with uvicorn on 0.0.0.0
