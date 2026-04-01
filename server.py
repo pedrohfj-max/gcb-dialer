@@ -884,29 +884,52 @@ async def dialer_webhook(request: Request):
         body = {}
 
     call_status = body.get("CallStatus", "")
-    to_number = body.get("To", "")
+    to_number = body.get("To", "").strip()
     amd_result = body.get("AnsweredBy", "")  # machine / human / unknown
 
-    print(f"[WEBHOOK] To:{to_number} Status:{call_status} AMD:{amd_result}")
+    print(f"[WEBHOOK] To:{to_number} Status:{call_status} AMD:{amd_result} Body:{dict(list(body.items())[:6])}")
 
-    # Se caixa postal detectada — marcar e não deixar a Clara falar
+    # Normalize number — try with and without + prefix
+    to_variants = {to_number, "+" + to_number.lstrip("+"), to_number.lstrip("+")}
+
+    # Find matching key in CAMPAIGN_STATUS
+    matched_number = None
+    for variant in to_variants:
+        if variant in CAMPAIGN_STATUS:
+            matched_number = variant
+            break
+    # Also try partial match
+    if not matched_number:
+        for num in list(CAMPAIGN_STATUS.keys()):
+            if num.lstrip("+") == to_number.lstrip("+"):
+                matched_number = num
+                break
+
+    print(f"[WEBHOOK] Matched: {matched_number} | Status keys: {list(CAMPAIGN_STATUS.keys())}")
+
+    # Se caixa postal detectada
     if amd_result in ("machine_start", "machine_end_beep", "machine_end_silence", "machine_end_other", "fax"):
-        if to_number in CAMPAIGN_STATUS:
-            CAMPAIGN_STATUS[to_number] = "caixa_postal"
-            print(f"[AMD] Caixa postal detectada para {to_number}")
+        if matched_number:
+            CAMPAIGN_STATUS[matched_number] = "caixa_postal"
+            print(f"[AMD] Caixa postal: {matched_number}")
             save_state()
 
     # Se não atendeu
     elif call_status in ("no-answer", "busy", "failed", "canceled"):
-        if to_number in CAMPAIGN_STATUS:
-            if CAMPAIGN_STATUS[to_number] != "caixa_postal":
-                CAMPAIGN_STATUS[to_number] = "nao_atendeu"
-                save_state()
+        if matched_number and CAMPAIGN_STATUS.get(matched_number) != "caixa_postal":
+            CAMPAIGN_STATUS[matched_number] = "nao_atendeu"
+            save_state()
 
-    # Se atendeu (human)
-    elif call_status == "in-progress" and amd_result in ("human", ""):
-        if to_number in CAMPAIGN_STATUS:
-            CAMPAIGN_STATUS[to_number] = "em_chamada"
+    # Se atendeu
+    elif call_status == "in-progress":
+        if matched_number:
+            CAMPAIGN_STATUS[matched_number] = "em_chamada 📱"
+            save_state()
+
+    # Chamada encerrada
+    elif call_status == "completed":
+        if matched_number and "discando" in CAMPAIGN_STATUS.get(matched_number, ""):
+            CAMPAIGN_STATUS[matched_number] = "nao_atendeu"
             save_state()
 
     # Decrementar chamadas ativas quando encerrar
