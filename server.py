@@ -415,7 +415,8 @@ CAMPAIGN_CONFIG = {
 }
 ACTIVE_CALLS = 0        # contador de chamadas ativas
 COOLDOWN_UNTIL = {}     # numero -> timestamp de quando pode ligar de novo
-NOTIFICATIONS = []  # lista de notificações para o pop-up
+NOTIFICATIONS = []      # lista de notificações para o pop-up
+CALLS_ANSWERED = set()  # números que atenderam (para distinguir de não atendeu)
 
 
 async def dialer_paste(request: Request):
@@ -490,6 +491,8 @@ async def dialer_endpoint(request: Request):
             badge = '<span style="background:#1d4ed8;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📞 Discando...</span>'
         elif status == "atendeu":
             badge = '<span style="background:#15803d;color:white;padding:3px 12px;border-radius:12px;font-size:13px">✅ Atendeu</span>'
+        elif "chamada" in status:
+            badge = '<span style="background:#0891b2;color:white;padding:3px 12px;border-radius:12px;font-size:13px;animation:pulse 1s infinite">📱 Em chamada...</span>'
         elif "qualificado" in status:
             badge = '<span style="background:#15803d;color:white;padding:3px 12px;border-radius:12px;font-size:13px">🏆 Qualificado</span>'
         elif status == "caixa_postal":
@@ -914,23 +917,32 @@ async def dialer_webhook(request: Request):
             print(f"[AMD] Caixa postal: {matched_number}")
             save_state()
 
+    # Se atendeu (in-progress = alguém atendeu o telefone)
+    elif call_status == "in-progress":
+        if matched_number:
+            CALLS_ANSWERED.add(matched_number)
+            CAMPAIGN_STATUS[matched_number] = "📱 Em chamada..."
+            save_state()
+            print(f"[WEBHOOK] Atendeu: {matched_number}")
+
     # Se não atendeu
     elif call_status in ("no-answer", "busy", "failed", "canceled"):
         if matched_number and CAMPAIGN_STATUS.get(matched_number) != "caixa_postal":
             CAMPAIGN_STATUS[matched_number] = "nao_atendeu"
             save_state()
 
-    # Se atendeu
-    elif call_status == "in-progress":
-        if matched_number:
-            CAMPAIGN_STATUS[matched_number] = "em_chamada 📱"
-            save_state()
-
     # Chamada encerrada
     elif call_status == "completed":
-        if matched_number and "discando" in CAMPAIGN_STATUS.get(matched_number, ""):
-            CAMPAIGN_STATUS[matched_number] = "nao_atendeu"
-            save_state()
+        if matched_number:
+            if matched_number in CALLS_ANSWERED:
+                # Atendeu mas a Clara não registrou interesse ainda
+                current = CAMPAIGN_STATUS.get(matched_number, "")
+                if "discando" in current or "chamada" in current:
+                    CAMPAIGN_STATUS[matched_number] = "atendeu"
+                save_state()
+            elif CAMPAIGN_STATUS.get(matched_number, "").startswith("discando"):
+                CAMPAIGN_STATUS[matched_number] = "nao_atendeu"
+                save_state()
 
     # Decrementar chamadas ativas quando encerrar
     if call_status in ("completed", "no-answer", "busy", "failed", "canceled"):
