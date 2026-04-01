@@ -368,6 +368,32 @@ COOLDOWN_UNTIL = {}     # numero -> timestamp de quando pode ligar de novo
 NOTIFICATIONS = []  # lista de notificações para o pop-up
 
 
+async def dialer_paste(request: Request):
+    """Recebe contatos colados como texto e atualiza a lista."""
+    from starlette.responses import RedirectResponse
+    form = await request.form()
+    text = form.get("text", "").strip()
+
+    CONTATOS_DIALER.clear()
+    CAMPAIGN_STATUS.clear()
+    CAMPAIGN_RETRIES.clear()
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("nome"):
+            continue
+        parts = line.split(",", 1)
+        if len(parts) == 2:
+            nome = parts[0].strip()
+            numero = parts[1].strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+            if numero and not numero.startswith("+"):
+                numero = "+55" + numero.lstrip("0")
+            if nome and numero:
+                CONTATOS_DIALER.append({"nome": nome, "numero": numero})
+
+    return RedirectResponse("/dialer", status_code=303)
+
+
 async def dialer_upload(request: Request):
     """Recebe CSV com contatos e atualiza a lista."""
     from starlette.responses import HTMLResponse, RedirectResponse
@@ -528,15 +554,25 @@ async def dialer_endpoint(request: Request):
     </form>
   </div>
 
-  <div class="upload-area">
-    <form action="/dialer/upload" method="post" enctype="multipart/form-data" style="display:flex;align-items:center;gap:16px;width:100%">
-      <div style="flex:1">
-        <div style="font-weight:600;margin-bottom:6px">📂 Upload de contatos</div>
-        <input type="file" name="file" accept=".csv" required>
-        <p class="hint">CSV com colunas: nome, numero (ex: Pedro, 11991986241)</p>
-      </div>
-      <button type="submit" class="upload-btn">Carregar lista</button>
-    </form>
+  <div class="upload-area" style="flex-direction:column;align-items:flex-start">
+    <div style="font-weight:600;margin-bottom:12px">📋 Adicionar contatos</div>
+    <div style="display:flex;gap:16px;width:100%;flex-wrap:wrap">
+      <!-- Opção 1: colar texto -->
+      <form action="/dialer/paste" method="post" style="flex:1;min-width:280px">
+        <label style="color:#64748b;font-size:12px;display:block;margin-bottom:6px">COLAR LISTA (nome,numero — um por linha)</label>
+        <textarea name="text" rows="4" placeholder="Pedro Jesus,11991986241&#10;Marcos,11999999999&#10;Alexsander,11988888888"
+          style="width:100%;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:10px;font-size:13px;font-family:monospace;resize:vertical"></textarea>
+        <button type="submit" class="upload-btn" style="margin-top:8px;width:100%">✅ Carregar lista</button>
+      </form>
+      <!-- Opção 2: upload arquivo -->
+      <form action="/dialer/upload" method="post" enctype="multipart/form-data" style="flex:1;min-width:280px">
+        <label style="color:#64748b;font-size:12px;display:block;margin-bottom:6px">OU FAZER UPLOAD DE ARQUIVO CSV</label>
+        <input type="file" name="file" accept=".csv,.txt"
+          style="color:#94a3b8;background:#0f172a;border:1px solid #334155;border-radius:6px;padding:8px;width:100%">
+        <button type="submit" class="upload-btn" style="margin-top:8px;width:100%">📂 Enviar arquivo</button>
+      </form>
+    </div>
+    <p class="hint" style="margin-top:8px">Formato: nome,numero — sem código de país (ex: 11991986241)</p>
   </div>
 
   <div class="stats">
@@ -1095,6 +1131,7 @@ if __name__ == "__main__":
             Route("/dialer/report", dialer_report, methods=["GET"]),
             Route("/dialer/webhook", dialer_webhook, methods=["POST"]),
             Route("/dialer/upload", dialer_upload, methods=["POST"]),
+            Route("/dialer/paste", dialer_paste, methods=["POST"]),
         ]
         # Build the Starlette app and run with uvicorn on 0.0.0.0
         starlette_app = mcp.sse_app()
