@@ -297,24 +297,50 @@ async def sms_endpoint(request: Request):
     return JSONResponse({"sms_enviado": ok, "para": telefone})
 
 
-CONTATOS_DIALER = [
-    {"nome": "Pedro Jesus",  "numero": "+5511991986241"},
-    {"nome": "Marcos",       "numero": "+5511999999991"},  # trocar pelo número real
-    {"nome": "Alexsander",   "numero": "+5511999999992"},  # trocar pelo número real
-]
-
+CONTATOS_DIALER = []  # preenchido via upload de CSV
 CAMPAIGN_STATUS = {}  # numero -> status
+
+
+async def dialer_upload(request: Request):
+    """Recebe CSV com contatos e atualiza a lista."""
+    from starlette.responses import HTMLResponse, RedirectResponse
+    import csv, io
+
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        return HTMLResponse("Nenhum arquivo enviado.", status_code=400)
+
+    content = await file.read()
+    text = content.decode("utf-8-sig").strip()
+
+    CONTATOS_DIALER.clear()
+    CAMPAIGN_STATUS.clear()
+
+    reader = csv.DictReader(io.StringIO(text))
+    for row in reader:
+        nome = row.get("nome") or row.get("Nome") or row.get("name") or ""
+        numero = row.get("numero") or row.get("Numero") or row.get("telefone") or row.get("Telefone") or ""
+        numero = numero.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+        if numero and not numero.startswith("+"):
+            numero = "+55" + numero.lstrip("0")
+        if nome and numero:
+            CONTATOS_DIALER.append({"nome": nome.strip(), "numero": numero})
+
+    return RedirectResponse("/dialer", status_code=303)
 
 
 async def dialer_endpoint(request: Request):
     """Interface visual do discador."""
+    from starlette.responses import HTMLResponse
+
     rows = ""
     for c in CONTATOS_DIALER:
         status = CAMPAIGN_STATUS.get(c["numero"], "aguardando")
         if status == "aguardando":
             badge = '<span style="background:#334155;color:#94a3b8;padding:3px 12px;border-radius:12px;font-size:13px">⏳ Aguardando</span>'
         elif status == "discando":
-            badge = '<span style="background:#1d4ed8;color:white;padding:3px 12px;border-radius:12px;font-size:13px;animation:pulse 1s infinite">📞 Discando...</span>'
+            badge = '<span style="background:#1d4ed8;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📞 Discando...</span>'
         elif status == "atendeu":
             badge = '<span style="background:#15803d;color:white;padding:3px 12px;border-radius:12px;font-size:13px">✅ Atendeu</span>'
         elif status == "erro":
@@ -329,7 +355,10 @@ async def dialer_endpoint(request: Request):
             <td>{badge}</td>
         </tr>"""
 
-    from starlette.responses import HTMLResponse
+    empty_msg = ""
+    if not CONTATOS_DIALER:
+        empty_msg = '<tr><td colspan="3" style="text-align:center;color:#475569;padding:32px">Faça upload de um CSV para começar</td></tr>'
+
     html = f"""<!DOCTYPE html>
 <html lang="pt">
 <head>
@@ -344,8 +373,10 @@ async def dialer_endpoint(request: Request):
     .subtitle {{ color: #64748b; font-size: 14px; margin-top: 4px; }}
     .btn {{ background: #3b82f6; color: white; border: none; padding: 12px 28px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; }}
     .btn:hover {{ background: #2563eb; }}
-    .btn-stop {{ background: #ef4444; }}
-    .btn-stop:hover {{ background: #dc2626; }}
+    .btn:disabled {{ background: #334155; cursor: not-allowed; }}
+    .upload-area {{ background: #1e293b; border: 2px dashed #334155; border-radius: 12px; padding: 24px; margin-bottom: 24px; display: flex; align-items: center; gap: 16px; }}
+    .upload-area input[type=file] {{ color: #94a3b8; }}
+    .upload-btn {{ background: #0f766e; color: white; border: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }}
     .card {{ background: #1e293b; border-radius: 16px; overflow: hidden; margin-bottom: 24px; }}
     table {{ width: 100%; border-collapse: collapse; }}
     th {{ background: #1e293b; color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding: 14px 20px; text-align: left; border-bottom: 1px solid #334155; }}
@@ -355,6 +386,7 @@ async def dialer_endpoint(request: Request):
     .stat {{ background: #1e293b; border-radius: 12px; padding: 20px 24px; flex: 1; }}
     .stat-val {{ font-size: 32px; font-weight: 700; }}
     .stat-label {{ color: #64748b; font-size: 13px; margin-top: 4px; }}
+    .hint {{ color: #475569; font-size: 12px; margin-top: 8px; }}
     @keyframes pulse {{ 0%,100%{{opacity:1}} 50%{{opacity:.6}} }}
   </style>
 </head>
@@ -364,7 +396,18 @@ async def dialer_endpoint(request: Request):
       <h1>🤖 GCB — Discador Inteligente</h1>
       <p class="subtitle">Clara liga automaticamente e qualifica cada investidor</p>
     </div>
-    <a href="/dialer/start" class="btn">▶ Iniciar Campanha</a>
+    {'<a href="/dialer/start" class="btn">▶ Iniciar Campanha</a>' if CONTATOS_DIALER else '<button class="btn" disabled>▶ Iniciar Campanha</button>'}
+  </div>
+
+  <div class="upload-area">
+    <form action="/dialer/upload" method="post" enctype="multipart/form-data" style="display:flex;align-items:center;gap:16px;width:100%">
+      <div style="flex:1">
+        <div style="font-weight:600;margin-bottom:6px">📂 Upload de contatos</div>
+        <input type="file" name="file" accept=".csv" required>
+        <p class="hint">CSV com colunas: nome, numero (ex: Pedro, 11991986241)</p>
+      </div>
+      <button type="submit" class="upload-btn">Carregar lista</button>
+    </form>
   </div>
 
   <div class="stats">
@@ -387,7 +430,7 @@ async def dialer_endpoint(request: Request):
       <thead>
         <tr><th>Nome</th><th>Número</th><th>Status</th></tr>
       </thead>
-      <tbody>{rows}</tbody>
+      <tbody>{rows or empty_msg}</tbody>
     </table>
   </div>
 
@@ -400,11 +443,12 @@ async def dialer_endpoint(request: Request):
 async def dialer_start(request: Request):
     """Dispara as ligações em background."""
     import threading
+    from starlette.responses import RedirectResponse
 
     def run_campaign():
         import urllib.request as ur
-        import json as js
-        for c in CONTATOS_DIALER:
+        import json as js, time
+        for c in list(CONTATOS_DIALER):
             CAMPAIGN_STATUS[c["numero"]] = "discando"
             payload = js.dumps({
                 "From": "+551151189954",
@@ -430,12 +474,11 @@ async def dialer_start(request: Request):
                         CAMPAIGN_STATUS[c["numero"]] = "atendeu"
                     else:
                         CAMPAIGN_STATUS[c["numero"]] = "discando"
-            except Exception as e:
+            except Exception:
                 CAMPAIGN_STATUS[c["numero"]] = "erro"
-            import time; time.sleep(6)
+            time.sleep(6)
 
     threading.Thread(target=run_campaign, daemon=True).start()
-    from starlette.responses import RedirectResponse
     return RedirectResponse("/dialer", status_code=303)
 
 
@@ -560,6 +603,7 @@ if __name__ == "__main__":
             Route("/dashboard", dashboard_endpoint, methods=["GET"]),
             Route("/dialer", dialer_endpoint, methods=["GET"]),
             Route("/dialer/start", dialer_start, methods=["GET"]),
+            Route("/dialer/upload", dialer_upload, methods=["POST"]),
         ]
         # Build the Starlette app and run with uvicorn on 0.0.0.0
         starlette_app = mcp.sse_app()
