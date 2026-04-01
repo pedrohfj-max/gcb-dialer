@@ -559,7 +559,7 @@ async def dialer_endpoint(request: Request):
       <!-- Opção 1: colar texto -->
       <form action="/dialer/paste" method="post" style="flex:1;min-width:280px">
         <label style="color:#64748b;font-size:12px;display:block;margin-bottom:6px">COLAR LISTA (nome,numero — um por linha)</label>
-        <textarea name="text" rows="4" placeholder="Pedro Jesus,11991986241&#10;Marcos,11999999999&#10;Alexsander,11988888888"
+        <textarea name="text" rows="4" placeholder="Nome do Contato,11999999999&#10;Outro Contato,11988888888"
           style="width:100%;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:10px;font-size:13px;font-family:monospace;resize:vertical"></textarea>
         <button type="submit" class="upload-btn" style="margin-top:8px;width:100%">✅ Carregar lista</button>
       </form>
