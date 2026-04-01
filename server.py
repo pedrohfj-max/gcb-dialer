@@ -1151,7 +1151,7 @@ async def dialer_config(request: Request):
     form = await request.form()
     try:
         CAMPAIGN_CONFIG["max_retries"] = int(form.get("max_retries", 3))
-        CAMPAIGN_CONFIG["retry_interval"] = int(form.get("retry_interval", 120))
+        CAMPAIGN_CONFIG["retry_interval"] = int(form.get("retry_interval", 2)) * 60  # salva em segundos
         CAMPAIGN_CONFIG["intervalo_chamadas"] = int(form.get("intervalo_chamadas", 8))
         CAMPAIGN_CONFIG["max_simultaneas"] = int(form.get("max_simultaneas", 3))
         CAMPAIGN_CONFIG["cooldown_dias"] = int(form.get("cooldown_dias", 7))
