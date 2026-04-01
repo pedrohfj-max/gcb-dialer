@@ -473,7 +473,6 @@ async def dialer_endpoint(request: Request):
 <html lang="pt">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="3">
   <title>GCB — Discador Inteligente</title>
   <style>
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -577,19 +576,19 @@ async def dialer_endpoint(request: Request):
 
   <div class="stats">
     <div class="stat">
-      <div class="stat-val">{len(CONTATOS_DIALER)}</div>
+      <div class="stat-val" id="stat-total">{len(CONTATOS_DIALER)}</div>
       <div class="stat-label">Contatos na fila</div>
     </div>
     <div class="stat">
-      <div class="stat-val">{sum(1 for s in CAMPAIGN_STATUS.values() if s == 'atendeu')}</div>
-      <div class="stat-label">Chamadas atendidas</div>
+      <div class="stat-val" id="stat-atendidas">{sum(1 for s in CAMPAIGN_STATUS.values() if "qualificado" in s)}</div>
+      <div class="stat-label">Qualificados</div>
     </div>
     <div class="stat">
-      <div class="stat-val">{ACTIVE_CALLS}</div>
+      <div class="stat-val" id="stat-ligando">{ACTIVE_CALLS}</div>
       <div class="stat-label">Ligando agora</div>
     </div>
     <div class="stat" style="border-left:3px solid #334155">
-      <div class="stat-val" style="font-size:18px;color:#64748b">{ACTIVE_CALLS}/{CAMPAIGN_CONFIG['max_simultaneas']}</div>
+      <div class="stat-val" id="stat-simult" style="font-size:18px;color:#64748b">{ACTIVE_CALLS}/{CAMPAIGN_CONFIG['max_simultaneas']}</div>
       <div class="stat-label">Simultâneas</div>
     </div>
   </div>
@@ -599,12 +598,38 @@ async def dialer_endpoint(request: Request):
       <thead>
         <tr><th>Nome</th><th>Número</th><th>Status</th></tr>
       </thead>
-      <tbody>{rows or empty_msg}</tbody>
+      <tbody id="contact-table">{rows or empty_msg}</tbody>
     </table>
   </div>
 
-  <p style="color:#334155;font-size:12px;text-align:center">Atualiza automaticamente a cada 3 segundos</p>
+  <p style="color:#334155;font-size:12px;text-align:center" id="last-update">Aguardando...</p>
 </div>
+
+<script>
+// Atualiza só a tabela e os stats — sem recarregar a página inteira
+async function refreshStatus() {{
+  try {{
+    const r = await fetch('/dialer/status');
+    const data = await r.json();
+
+    // Atualiza stats
+    document.getElementById('stat-total').textContent = data.total;
+    document.getElementById('stat-atendidas').textContent = data.atendidas;
+    document.getElementById('stat-ligando').textContent = data.ligando;
+    document.getElementById('stat-simult').textContent = data.ligando + '/' + data.max_simult;
+
+    // Atualiza tabela
+    document.getElementById('contact-table').innerHTML = data.rows_html;
+
+    // Timestamp
+    const now = new Date().toLocaleTimeString('pt-BR');
+    document.getElementById('last-update').textContent = 'Última atualização: ' + now;
+  }} catch(e) {{}}
+}}
+
+setInterval(refreshStatus, 3000);
+refreshStatus();
+</script>
 
 <!-- Pop-up de notificação -->
 <div id="notif-container" style="position:fixed;bottom:24px;right:24px;display:flex;flex-direction:column;gap:12px;z-index:999;max-width:360px"></div>
@@ -938,6 +963,50 @@ async def dialer_report(request: Request):
     return HTMLResponse(html)
 
 
+async def dialer_status(request: Request):
+    """Retorna status atual em JSON para atualização parcial da página."""
+    rows_html = ""
+    for c in CONTATOS_DIALER:
+        status = CAMPAIGN_STATUS.get(c["numero"], "aguardando")
+        if status == "aguardando":
+            badge = '<span style="background:#334155;color:#94a3b8;padding:3px 12px;border-radius:12px;font-size:13px">⏳ Aguardando</span>'
+        elif status == "discando":
+            badge = '<span style="background:#1d4ed8;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📞 Discando...</span>'
+        elif status == "atendeu":
+            badge = '<span style="background:#15803d;color:white;padding:3px 12px;border-radius:12px;font-size:13px">✅ Atendeu</span>'
+        elif "qualificado" in status:
+            badge = '<span style="background:#15803d;color:white;padding:3px 12px;border-radius:12px;font-size:13px">🏆 Qualificado</span>'
+        elif status == "caixa_postal":
+            badge = '<span style="background:#78350f;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📱 Caixa postal</span>'
+        elif status == "nao_atendeu":
+            badge = '<span style="background:#92400e;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📵 Não atendeu</span>'
+        elif status == "sem_interesse":
+            badge = '<span style="background:#6b21a8;color:white;padding:3px 12px;border-radius:12px;font-size:13px">👋 Sem interesse</span>'
+        elif status.startswith("discando"):
+            badge = f'<span style="background:#1d4ed8;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📞 {status.capitalize()}</span>'
+        elif status.startswith("esgotado"):
+            badge = f'<span style="background:#4b5563;color:white;padding:3px 12px;border-radius:12px;font-size:13px">🚫 {status.capitalize()}</span>'
+        elif status.startswith("cooldown"):
+            badge = f'<span style="background:#7c3aed;color:white;padding:3px 12px;border-radius:12px;font-size:13px">⏱ {status.capitalize()}</span>'
+        elif "horário" in status:
+            badge = f'<span style="background:#0369a1;color:white;padding:3px 12px;border-radius:12px;font-size:13px">🕘 {status.capitalize()}</span>'
+        else:
+            badge = f'<span style="background:#334155;color:#94a3b8;padding:3px 12px;border-radius:12px;font-size:13px">{status}</span>'
+
+        rows_html += f'<tr><td style="font-weight:500">{c["nome"]}</td><td style="color:#64748b">{c["numero"]}</td><td>{badge}</td></tr>'
+
+    if not rows_html:
+        rows_html = '<tr><td colspan="3" style="text-align:center;color:#475569;padding:32px">Faça upload de um CSV para começar</td></tr>'
+
+    return JSONResponse({
+        "total": len(CONTATOS_DIALER),
+        "atendidas": sum(1 for s in CAMPAIGN_STATUS.values() if "qualificado" in s),
+        "ligando": ACTIVE_CALLS,
+        "max_simult": CAMPAIGN_CONFIG["max_simultaneas"],
+        "rows_html": rows_html,
+    })
+
+
 async def dialer_notifications(request: Request):
     """Retorna notificações pendentes e limpa a fila."""
     notifs = list(NOTIFICATIONS)
@@ -1127,6 +1196,7 @@ if __name__ == "__main__":
             Route("/dialer/pause", dialer_pause, methods=["GET"]),
             Route("/dialer/config", dialer_config, methods=["POST"]),
             Route("/dialer/notifications", dialer_notifications, methods=["GET"]),
+            Route("/dialer/status", dialer_status, methods=["GET"]),
             Route("/dialer/report", dialer_report, methods=["GET"]),
             Route("/dialer/webhook", dialer_webhook, methods=["POST"]),
             Route("/dialer/upload", dialer_upload, methods=["POST"]),
