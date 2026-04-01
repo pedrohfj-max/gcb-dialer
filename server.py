@@ -765,7 +765,8 @@ async def dialer_start(request: Request):
 
             tentativa = CAMPAIGN_RETRIES.get(c["numero"], 0) + 1
             CAMPAIGN_RETRIES[c["numero"]] = tentativa
-            CAMPAIGN_STATUS[c["numero"]] = f"discando ({tentativa}/{MAX_RETRIES})"
+            max_r = CAMPAIGN_CONFIG["max_retries"]
+            CAMPAIGN_STATUS[c["numero"]] = f"discando ({tentativa}/{max_r})"
 
             ok = fazer_ligacao(c["numero"], c["nome"])
             if not ok:
