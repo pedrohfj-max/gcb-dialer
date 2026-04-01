@@ -814,6 +814,12 @@ async def dialer_start(request: Request):
             if "qualificado" in current or current == "sem_interesse":
                 return
 
+            # Verificar de novo antes de ligar — pode ter qualificado durante o retry interval
+            st = CAMPAIGN_STATUS.get(numero, "")
+            if "qualificado" in st or st in ("atendeu", "sem_interesse"):
+                print(f"[DIALER] {nome} já finalizado ({st}), pulando tentativa {tentativa}")
+                return
+
             # Fazer a ligação
             CAMPAIGN_RETRIES[numero] = tentativa
             CAMPAIGN_STATUS[numero] = f"discando ({tentativa}/{max_r})"
