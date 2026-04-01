@@ -298,8 +298,11 @@ async def sms_endpoint(request: Request):
 
 
 CONTATOS_DIALER = []  # preenchido via upload de CSV
-CAMPAIGN_STATUS = {}  # numero -> status
-CAMPAIGN_PAUSED = False  # controle de pausa
+CAMPAIGN_STATUS = {}   # numero -> status
+CAMPAIGN_RETRIES = {}  # numero -> tentativas feitas
+CAMPAIGN_PAUSED = False
+MAX_RETRIES = 3
+RETRY_INTERVAL = 120  # segundos entre tentativas (2 min)
 
 
 async def dialer_upload(request: Request):
@@ -317,6 +320,7 @@ async def dialer_upload(request: Request):
 
     CONTATOS_DIALER.clear()
     CAMPAIGN_STATUS.clear()
+    CAMPAIGN_RETRIES.clear()
 
     reader = csv.DictReader(io.StringIO(text))
     for row in reader:
@@ -352,6 +356,10 @@ async def dialer_endpoint(request: Request):
             badge = '<span style="background:#b91c1c;color:white;padding:3px 12px;border-radius:12px;font-size:13px">❌ Erro</span>'
         elif status == "sem_interesse":
             badge = '<span style="background:#6b21a8;color:white;padding:3px 12px;border-radius:12px;font-size:13px">👋 Sem interesse</span>'
+        elif status.startswith("discando"):
+            badge = f'<span style="background:#1d4ed8;color:white;padding:3px 12px;border-radius:12px;font-size:13px">📞 {status.capitalize()}</span>'
+        elif status.startswith("esgotado"):
+            badge = f'<span style="background:#4b5563;color:white;padding:3px 12px;border-radius:12px;font-size:13px">🚫 {status.capitalize()}</span>'
         else:
             badge = f'<span style="background:#334155;color:#94a3b8;padding:3px 12px;border-radius:12px;font-size:13px">{status}</span>'
 
@@ -458,48 +466,88 @@ async def dialer_start(request: Request):
 
     CAMPAIGN_PAUSED = False
 
-    def run_campaign():
+    def fazer_ligacao(numero, nome):
+        """Faz uma ligação e retorna True se foi enfileirada com sucesso."""
         import urllib.request as ur
-        import json as js, time
+        import json as js
+        payload = js.dumps({
+            "From": "+551151189954",
+            "To": numero,
+            "AIAssistantId": "assistant-402286c0-bb62-4af9-ae5b-ad5be9faa21b",
+            "MachineDetection": "Enable",
+            "AsyncAmd": True,
+            "DetectionMode": "Premium",
+            "StatusCallback": "https://gcb-dialer-production.up.railway.app/dialer/webhook",
+            "StatusCallbackMethod": "POST",
+        }).encode()
+        req = ur.Request(
+            "https://api.telnyx.com/v2/texml/ai_calls/2924083901620028790",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {TELNYX_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with ur.urlopen(req, timeout=10) as resp:
+                result = js.load(resp)
+                return result.get("status") in ("queued", "ringing")
+        except Exception:
+            return False
+
+    def run_campaign():
+        import time
+
+        # Fila de retry: (numero, nome, tentativa, quando_tentar)
+        retry_queue = []
+
         for c in list(CONTATOS_DIALER):
             # Esperar se pausado
             while CAMPAIGN_PAUSED:
                 time.sleep(1)
 
-            # Pular contatos já processados
+            # Pular já finalizados
             if CAMPAIGN_STATUS.get(c["numero"]) in ("atendeu", "sem_interesse"):
                 continue
 
-            CAMPAIGN_STATUS[c["numero"]] = "discando"
-            payload = js.dumps({
-                "From": "+551151189954",
-                "To": c["numero"],
-                "AIAssistantId": "assistant-402286c0-bb62-4af9-ae5b-ad5be9faa21b",
-                "MachineDetection": "Enable",
-                "AsyncAmd": True,
-                "DetectionMode": "Premium",
-                "StatusCallback": "https://gcb-dialer-production.up.railway.app/dialer/webhook",
-                "StatusCallbackMethod": "POST",
-            }).encode()
-            req = ur.Request(
-                "https://api.telnyx.com/v2/texml/ai_calls/2924083901620028790",
-                data=payload,
-                headers={
-                    "Authorization": f"Bearer {TELNYX_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            try:
-                with ur.urlopen(req, timeout=10) as resp:
-                    result = js.load(resp)
-                    if result.get("status") in ("queued", "ringing"):
-                        CAMPAIGN_STATUS[c["numero"]] = "atendeu"
-                    else:
-                        CAMPAIGN_STATUS[c["numero"]] = "nao_atendeu"
-            except Exception:
+            tentativa = CAMPAIGN_RETRIES.get(c["numero"], 0) + 1
+            CAMPAIGN_RETRIES[c["numero"]] = tentativa
+            CAMPAIGN_STATUS[c["numero"]] = f"discando ({tentativa}/{MAX_RETRIES})"
+
+            ok = fazer_ligacao(c["numero"], c["nome"])
+            if not ok:
                 CAMPAIGN_STATUS[c["numero"]] = "erro"
-            time.sleep(6)
+
+            time.sleep(8)
+
+        # Processar retries
+        for c in list(CONTATOS_DIALER):
+            numero = c["numero"]
+            while True:
+                time.sleep(5)
+                status = CAMPAIGN_STATUS.get(numero, "")
+                tentativas = CAMPAIGN_RETRIES.get(numero, 0)
+
+                # Parar se finalizado ou máximo de tentativas atingido
+                if status in ("atendeu", "sem_interesse"):
+                    break
+                if tentativas >= MAX_RETRIES:
+                    CAMPAIGN_STATUS[numero] = f"esgotado ({tentativas} tentativas)"
+                    break
+
+                # Retry se não atendeu ou caixa postal
+                if status in ("nao_atendeu", "caixa_postal", "erro"):
+                    while CAMPAIGN_PAUSED:
+                        time.sleep(1)
+
+                    tentativa = tentativas + 1
+                    CAMPAIGN_RETRIES[numero] = tentativa
+                    CAMPAIGN_STATUS[numero] = f"discando ({tentativa}/{MAX_RETRIES})"
+                    print(f"[RETRY] {c['nome']} — tentativa {tentativa}/{MAX_RETRIES}")
+
+                    fazer_ligacao(numero, c["nome"])
+                    time.sleep(RETRY_INTERVAL)
 
     threading.Thread(target=run_campaign, daemon=True).start()
     return RedirectResponse("/dialer", status_code=303)
