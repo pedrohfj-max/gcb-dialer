@@ -305,7 +305,9 @@ CAMPAIGN_CONFIG = {
     "max_retries": 3,
     "retry_interval": 120,  # segundos
     "intervalo_chamadas": 8,  # segundos entre chamadas
+    "max_simultaneas": 3,    # máximo de chamadas ao mesmo tempo
 }
+ACTIVE_CALLS = 0  # contador de chamadas ativas
 NOTIFICATIONS = []  # lista de notificações para o pop-up
 
 
@@ -441,6 +443,11 @@ async def dialer_endpoint(request: Request):
         <input type="number" name="intervalo_chamadas" value="{CAMPAIGN_CONFIG['intervalo_chamadas']}" min="5" max="60"
           style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:8px 12px;width:80px;font-size:15px">
       </div>
+      <div>
+        <label style="color:#64748b;font-size:12px;display:block;margin-bottom:4px">CHAMADAS SIMULTÂNEAS</label>
+        <input type="number" name="max_simultaneas" value="{CAMPAIGN_CONFIG['max_simultaneas']}" min="1" max="10"
+          style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:8px 12px;width:80px;font-size:15px">
+      </div>
       <button type="submit" style="background:#475569;color:white;border:none;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">💾 Salvar</button>
     </form>
   </div>
@@ -466,8 +473,12 @@ async def dialer_endpoint(request: Request):
       <div class="stat-label">Chamadas atendidas</div>
     </div>
     <div class="stat">
-      <div class="stat-val">{sum(1 for s in CAMPAIGN_STATUS.values() if s == 'discando')}</div>
-      <div class="stat-label">Em andamento</div>
+      <div class="stat-val">{ACTIVE_CALLS}</div>
+      <div class="stat-label">Ligando agora</div>
+    </div>
+    <div class="stat" style="border-left:3px solid #334155">
+      <div class="stat-val" style="font-size:18px;color:#64748b">{ACTIVE_CALLS}/{CAMPAIGN_CONFIG['max_simultaneas']}</div>
+      <div class="stat-label">Simultâneas</div>
     </div>
   </div>
 
@@ -531,8 +542,15 @@ async def dialer_start(request: Request):
 
     def fazer_ligacao(numero, nome):
         """Faz uma ligação e retorna True se foi enfileirada com sucesso."""
+        global ACTIVE_CALLS
         import urllib.request as ur
-        import json as js
+        import json as js, time
+
+        # Esperar se atingiu limite de simultâneas
+        while ACTIVE_CALLS >= CAMPAIGN_CONFIG["max_simultaneas"]:
+            time.sleep(2)
+
+        ACTIVE_CALLS += 1
         payload = js.dumps({
             "From": "+551151189954",
             "To": numero,
@@ -558,6 +576,14 @@ async def dialer_start(request: Request):
                 return result.get("status") in ("queued", "ringing")
         except Exception:
             return False
+        finally:
+            # Decrementar após ~30s (tempo médio de atendimento/não atendimento)
+            def decrement():
+                global ACTIVE_CALLS
+                time.sleep(30)
+                ACTIVE_CALLS = max(0, ACTIVE_CALLS - 1)
+            import threading
+            threading.Thread(target=decrement, daemon=True).start()
 
     def run_campaign():
         import time
@@ -647,6 +673,11 @@ async def dialer_webhook(request: Request):
         if to_number in CAMPAIGN_STATUS:
             if CAMPAIGN_STATUS[to_number] != "caixa_postal":
                 CAMPAIGN_STATUS[to_number] = "nao_atendeu"
+
+    # Decrementar chamadas ativas quando encerrar
+    if call_status in ("completed", "no-answer", "busy", "failed", "canceled"):
+        global ACTIVE_CALLS
+        ACTIVE_CALLS = max(0, ACTIVE_CALLS - 1)
 
     return JSONResponse({"ok": True})
 
@@ -775,6 +806,7 @@ async def dialer_config(request: Request):
         CAMPAIGN_CONFIG["max_retries"] = int(form.get("max_retries", 3))
         CAMPAIGN_CONFIG["retry_interval"] = int(form.get("retry_interval", 120))
         CAMPAIGN_CONFIG["intervalo_chamadas"] = int(form.get("intervalo_chamadas", 8))
+        CAMPAIGN_CONFIG["max_simultaneas"] = int(form.get("max_simultaneas", 3))
     except ValueError:
         pass
     return RedirectResponse("/dialer", status_code=303)
