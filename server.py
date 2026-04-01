@@ -839,12 +839,17 @@ async def dialer_start(request: Request):
                 status = CAMPAIGN_STATUS.get(numero, "")
                 tentativas = CAMPAIGN_RETRIES.get(numero, 0)
 
-                # Parar se finalizado ou máximo de tentativas atingido
-                if status in ("atendeu", "sem_interesse"):
+                # Não fazer nada enquanto a ligação ainda está ativa
+                if "discando" in status or "chamada" in status:
+                    continue
+
+                # Parar se finalizado
+                if status in ("atendeu", "sem_interesse") or "qualificado" in status:
                     break
+
+                # Esgotou tentativas
                 if tentativas >= CAMPAIGN_CONFIG["max_retries"]:
                     CAMPAIGN_STATUS[numero] = f"esgotado ({tentativas} tentativas)"
-                    # Aplicar cooldown
                     dias = CAMPAIGN_CONFIG["cooldown_dias"]
                     COOLDOWN_UNTIL[numero] = time.time() + (dias * 86400)
                     print(f"[COOLDOWN] {numero} em cooldown por {dias} dias após esgotar tentativas")
