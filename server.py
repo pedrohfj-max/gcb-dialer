@@ -70,7 +70,7 @@ def criar_lead_hubspot(nome: str, telefone: str, produto: str, horario: str) -> 
     try:
         payload2 = json.dumps({"properties": {
             "dealname": f"{nome} — {produto}",
-            "dealstage": "appointmentscheduled",
+            "dealstage": "1334932783",  # 🤖 Qualificado pela Clara
             "pipeline": "default",
             "description": f"Lead qualificado pela Clara. Produto: {produto}. Horário: {horario}.",
         }}).encode()
