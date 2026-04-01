@@ -306,6 +306,7 @@ CAMPAIGN_CONFIG = {
     "retry_interval": 120,  # segundos
     "intervalo_chamadas": 8,  # segundos entre chamadas
 }
+NOTIFICATIONS = []  # lista de notificações para o pop-up
 
 
 async def dialer_upload(request: Request):
@@ -479,6 +480,41 @@ async def dialer_endpoint(request: Request):
   </div>
 
   <p style="color:#334155;font-size:12px;text-align:center">Atualiza automaticamente a cada 3 segundos</p>
+</div>
+
+<!-- Pop-up de notificação -->
+<div id="notif-container" style="position:fixed;bottom:24px;right:24px;display:flex;flex-direction:column;gap:12px;z-index:999;max-width:360px"></div>
+
+<script>
+function showNotif(n) {{
+  const el = document.createElement('div');
+  el.style.cssText = 'background:#15803d;color:white;padding:16px 20px;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.4);animation:slideIn .3s ease;font-size:14px;line-height:1.5';
+  el.innerHTML = `<div style="font-weight:700;font-size:16px;margin-bottom:4px">🏆 Lead Qualificado!</div>
+    <div><strong>${{n.nome}}</strong> confirmou interesse</div>
+    <div style="color:#86efac">📈 ${{n.produto}}</div>
+    <div style="color:#86efac;font-size:12px;margin-top:4px">⏰ Melhor horário: ${{n.horario || 'não informado'}} &nbsp;·&nbsp; ${{n.timestamp}}</div>`;
+  document.getElementById('notif-container').appendChild(el);
+  setTimeout(() => el.remove(), 8000);
+}}
+
+async function checkNotifs() {{
+  try {{
+    const r = await fetch('/dialer/notifications');
+    const data = await r.json();
+    (data.notifications || []).forEach(showNotif);
+  }} catch(e) {{}}
+}}
+
+// Verificar notificações a cada 2 segundos
+setInterval(checkNotifs, 2000);
+</script>
+
+<style>
+@keyframes slideIn {{
+  from {{ transform: translateX(120%); opacity: 0; }}
+  to {{ transform: translateX(0); opacity: 1; }}
+}}
+</style>
 </body>
 </html>"""
     return HTMLResponse(html)
@@ -614,6 +650,13 @@ async def dialer_webhook(request: Request):
     return JSONResponse({"ok": True})
 
 
+async def dialer_notifications(request: Request):
+    """Retorna notificações pendentes e limpa a fila."""
+    notifs = list(NOTIFICATIONS)
+    NOTIFICATIONS.clear()
+    return JSONResponse({"notifications": notifs})
+
+
 async def dialer_config(request: Request):
     """Salva configurações da campanha."""
     from starlette.responses import RedirectResponse
@@ -728,6 +771,14 @@ async def lead_endpoint(request: Request):
         if nome_lower in c["nome"].lower() or c["nome"].lower() in nome_lower:
             if status == "interesse_confirmado":
                 CAMPAIGN_STATUS[c["numero"]] = "qualificado ✅"
+                # Adicionar notificação de lead quente
+                NOTIFICATIONS.append({
+                    "tipo": "qualificado",
+                    "nome": nome,
+                    "produto": produto,
+                    "horario": body.get("horario_contato", ""),
+                    "timestamp": datetime.now().strftime("%H:%M:%S"),
+                })
                 print(f"[DIALER] {c['nome']} marcado como qualificado — não será chamado novamente")
             elif status == "sem_interesse":
                 CAMPAIGN_STATUS[c["numero"]] = "sem_interesse"
@@ -776,6 +827,7 @@ if __name__ == "__main__":
             Route("/dialer/start", dialer_start, methods=["GET"]),
             Route("/dialer/pause", dialer_pause, methods=["GET"]),
             Route("/dialer/config", dialer_config, methods=["POST"]),
+            Route("/dialer/notifications", dialer_notifications, methods=["GET"]),
             Route("/dialer/webhook", dialer_webhook, methods=["POST"]),
             Route("/dialer/upload", dialer_upload, methods=["POST"]),
         ]
