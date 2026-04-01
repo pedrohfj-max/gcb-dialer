@@ -420,6 +420,7 @@ async def dialer_endpoint(request: Request):
     <div style="display:flex;gap:10px">
       {'<a href="/dialer/start" class="btn">▶ Iniciar Campanha</a>' if CONTATOS_DIALER else '<button class="btn" disabled>▶ Iniciar Campanha</button>'}
       {'<a href="/dialer/pause" class="btn" style="background:#f59e0b">⏸ Pausar</a>' if not CAMPAIGN_PAUSED else '<a href="/dialer/pause" class="btn" style="background:#22c55e">▶ Retomar</a>'}
+      <a href="/dialer/report" class="btn" style="background:#6366f1">📊 Relatório</a>
     </div>
   </div>
 
@@ -650,6 +651,115 @@ async def dialer_webhook(request: Request):
     return JSONResponse({"ok": True})
 
 
+async def dialer_report(request: Request):
+    """Relatório final da campanha."""
+    from starlette.responses import HTMLResponse
+
+    total = len(CONTATOS_DIALER)
+    if total == 0:
+        return HTMLResponse("<h2 style='font-family:sans-serif;color:white;background:#0f172a;padding:40px'>Nenhuma campanha rodou ainda.</h2>")
+
+    qualificados = [c for c in CONTATOS_DIALER if "qualificado" in CAMPAIGN_STATUS.get(c["numero"], "")]
+    sem_interesse = [c for c in CONTATOS_DIALER if CAMPAIGN_STATUS.get(c["numero"]) == "sem_interesse"]
+    nao_atendeu = [c for c in CONTATOS_DIALER if CAMPAIGN_STATUS.get(c["numero"]) in ("nao_atendeu", "esgotado")]
+    caixa_postal = [c for c in CONTATOS_DIALER if CAMPAIGN_STATUS.get(c["numero"]) == "caixa_postal"]
+    em_andamento = [c for c in CONTATOS_DIALER if CAMPAIGN_STATUS.get(c["numero"], "aguardando") not in ("sem_interesse", "nao_atendeu", "caixa_postal") and "qualificado" not in CAMPAIGN_STATUS.get(c["numero"], "") and "esgotado" not in CAMPAIGN_STATUS.get(c["numero"], "")]
+
+    taxa_contato = round(len(qualificados + sem_interesse) / total * 100) if total else 0
+    taxa_conv = round(len(qualificados) / total * 100) if total else 0
+
+    # Leads qualificados da lista de leads.json
+    try:
+        with open(LEADS_FILE) as f:
+            leads = json.load(f)
+        leads_qual = [l for l in leads if l.get("status") == "interesse_confirmado"]
+    except:
+        leads_qual = []
+
+    leads_rows = ""
+    for l in leads_qual:
+        leads_rows += f"""<tr>
+            <td>{l.get('nome_investidor','—')}</td>
+            <td style="color:#86efac">{l.get('produto_interesse','—')}</td>
+            <td>{l.get('horario_contato','—')}</td>
+            <td style="color:#64748b;font-size:12px">{l.get('registrado_em','')[:19].replace('T',' ')}</td>
+        </tr>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8">
+  <title>GCB — Relatório da Campanha</title>
+  <style>
+    * {{ box-sizing:border-box; margin:0; padding:0; }}
+    body {{ font-family:-apple-system,sans-serif; background:#0f172a; color:#e2e8f0; padding:40px; }}
+    h1 {{ font-size:24px; font-weight:700; margin-bottom:4px; }}
+    .sub {{ color:#64748b; font-size:14px; margin-bottom:32px; }}
+    .grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:32px; }}
+    .card {{ background:#1e293b; border-radius:12px; padding:20px 24px; }}
+    .val {{ font-size:36px; font-weight:700; }}
+    .label {{ color:#64748b; font-size:13px; margin-top:4px; }}
+    .green {{ color:#22c55e; }}
+    .red {{ color:#ef4444; }}
+    .yellow {{ color:#f59e0b; }}
+    .blue {{ color:#60a5fa; }}
+    table {{ width:100%; border-collapse:collapse; background:#1e293b; border-radius:12px; overflow:hidden; }}
+    th {{ color:#64748b; font-size:12px; text-transform:uppercase; padding:12px 16px; text-align:left; border-bottom:1px solid #334155; }}
+    td {{ padding:14px 16px; font-size:14px; border-bottom:1px solid #0f172a; }}
+    .section-title {{ font-size:16px; font-weight:600; margin:24px 0 12px; }}
+    .back {{ display:inline-block; margin-bottom:24px; color:#60a5fa; text-decoration:none; font-size:14px; }}
+    .bar-wrap {{ background:#334155; border-radius:99px; height:8px; margin-top:8px; }}
+    .bar {{ height:8px; border-radius:99px; background:#22c55e; }}
+  </style>
+</head>
+<body>
+  <a href="/dialer" class="back">← Voltar ao discador</a>
+  <h1>📊 Relatório da Campanha</h1>
+  <p class="sub">GCB Investimentos · {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
+
+  <div class="grid">
+    <div class="card">
+      <div class="val">{total}</div>
+      <div class="label">Total de contatos</div>
+    </div>
+    <div class="card">
+      <div class="val green">{len(qualificados)}</div>
+      <div class="label">Leads qualificados</div>
+      <div class="bar-wrap"><div class="bar" style="width:{taxa_conv}%"></div></div>
+      <div style="color:#64748b;font-size:12px;margin-top:4px">{taxa_conv}% de conversão</div>
+    </div>
+    <div class="card">
+      <div class="val blue">{taxa_contato}%</div>
+      <div class="label">Taxa de contato</div>
+    </div>
+    <div class="card">
+      <div class="val yellow">{len(nao_atendeu) + len(caixa_postal)}</div>
+      <div class="label">Não contatados</div>
+    </div>
+  </div>
+
+  <div class="section-title">🏆 Leads Qualificados</div>
+  <table>
+    <thead><tr><th>Nome</th><th>Produto</th><th>Horário preferido</th><th>Registrado em</th></tr></thead>
+    <tbody>{leads_rows if leads_rows else '<tr><td colspan="4" style="text-align:center;color:#475569;padding:24px">Nenhum lead qualificado ainda</td></tr>'}</tbody>
+  </table>
+
+  <div class="section-title">📋 Resumo por status</div>
+  <table>
+    <thead><tr><th>Status</th><th>Quantidade</th><th>%</th></tr></thead>
+    <tbody>
+      <tr><td>🏆 Qualificados</td><td>{len(qualificados)}</td><td>{round(len(qualificados)/total*100)}%</td></tr>
+      <tr><td>👋 Sem interesse</td><td>{len(sem_interesse)}</td><td>{round(len(sem_interesse)/total*100)}%</td></tr>
+      <tr><td>📵 Não atendeu</td><td>{len(nao_atendeu)}</td><td>{round(len(nao_atendeu)/total*100)}%</td></tr>
+      <tr><td>📱 Caixa postal</td><td>{len(caixa_postal)}</td><td>{round(len(caixa_postal)/total*100)}%</td></tr>
+      <tr><td>⏳ Em andamento</td><td>{len(em_andamento)}</td><td>{round(len(em_andamento)/total*100)}%</td></tr>
+    </tbody>
+  </table>
+</body>
+</html>"""
+    return HTMLResponse(html)
+
+
 async def dialer_notifications(request: Request):
     """Retorna notificações pendentes e limpa a fila."""
     notifs = list(NOTIFICATIONS)
@@ -828,6 +938,7 @@ if __name__ == "__main__":
             Route("/dialer/pause", dialer_pause, methods=["GET"]),
             Route("/dialer/config", dialer_config, methods=["POST"]),
             Route("/dialer/notifications", dialer_notifications, methods=["GET"]),
+            Route("/dialer/report", dialer_report, methods=["GET"]),
             Route("/dialer/webhook", dialer_webhook, methods=["POST"]),
             Route("/dialer/upload", dialer_upload, methods=["POST"]),
         ]
