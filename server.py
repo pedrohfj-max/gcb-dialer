@@ -301,8 +301,11 @@ CONTATOS_DIALER = []  # preenchido via upload de CSV
 CAMPAIGN_STATUS = {}   # numero -> status
 CAMPAIGN_RETRIES = {}  # numero -> tentativas feitas
 CAMPAIGN_PAUSED = False
-MAX_RETRIES = 3
-RETRY_INTERVAL = 120  # segundos entre tentativas (2 min)
+CAMPAIGN_CONFIG = {
+    "max_retries": 3,
+    "retry_interval": 120,  # segundos
+    "intervalo_chamadas": 8,  # segundos entre chamadas
+}
 
 
 async def dialer_upload(request: Request):
@@ -415,6 +418,27 @@ async def dialer_endpoint(request: Request):
       {'<a href="/dialer/start" class="btn">▶ Iniciar Campanha</a>' if CONTATOS_DIALER else '<button class="btn" disabled>▶ Iniciar Campanha</button>'}
       {'<a href="/dialer/pause" class="btn" style="background:#f59e0b">⏸ Pausar</a>' if not CAMPAIGN_PAUSED else '<a href="/dialer/pause" class="btn" style="background:#22c55e">▶ Retomar</a>'}
     </div>
+  </div>
+
+  <div class="upload-area" style="margin-bottom:16px">
+    <form action="/dialer/config" method="post" style="display:flex;align-items:flex-end;gap:20px;width:100%;flex-wrap:wrap">
+      <div>
+        <label style="color:#64748b;font-size:12px;display:block;margin-bottom:4px">MAX TENTATIVAS</label>
+        <input type="number" name="max_retries" value="{CAMPAIGN_CONFIG['max_retries']}" min="1" max="10"
+          style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:8px 12px;width:80px;font-size:15px">
+      </div>
+      <div>
+        <label style="color:#64748b;font-size:12px;display:block;margin-bottom:4px">INTERVALO ENTRE TENTATIVAS (min)</label>
+        <input type="number" name="retry_interval" value="{CAMPAIGN_CONFIG['retry_interval'] // 60}" min="1" max="60"
+          style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:8px 12px;width:80px;font-size:15px">
+      </div>
+      <div>
+        <label style="color:#64748b;font-size:12px;display:block;margin-bottom:4px">INTERVALO ENTRE CHAMADAS (seg)</label>
+        <input type="number" name="intervalo_chamadas" value="{CAMPAIGN_CONFIG['intervalo_chamadas']}" min="5" max="60"
+          style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:8px 12px;width:80px;font-size:15px">
+      </div>
+      <button type="submit" style="background:#475569;color:white;border:none;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">💾 Salvar</button>
+    </form>
   </div>
 
   <div class="upload-area">
@@ -532,7 +556,7 @@ async def dialer_start(request: Request):
                 # Parar se finalizado ou máximo de tentativas atingido
                 if status in ("atendeu", "sem_interesse"):
                     break
-                if tentativas >= MAX_RETRIES:
+                if tentativas >= CAMPAIGN_CONFIG["max_retries"]:
                     CAMPAIGN_STATUS[numero] = f"esgotado ({tentativas} tentativas)"
                     break
 
@@ -543,11 +567,12 @@ async def dialer_start(request: Request):
 
                     tentativa = tentativas + 1
                     CAMPAIGN_RETRIES[numero] = tentativa
-                    CAMPAIGN_STATUS[numero] = f"discando ({tentativa}/{MAX_RETRIES})"
-                    print(f"[RETRY] {c['nome']} — tentativa {tentativa}/{MAX_RETRIES}")
+                    max_r = CAMPAIGN_CONFIG["max_retries"]
+                    CAMPAIGN_STATUS[numero] = f"discando ({tentativa}/{max_r})"
+                    print(f"[RETRY] {c['nome']} — tentativa {tentativa}/{max_r}")
 
                     fazer_ligacao(numero, c["nome"])
-                    time.sleep(RETRY_INTERVAL)
+                    time.sleep(CAMPAIGN_CONFIG["retry_interval"])
 
     threading.Thread(target=run_campaign, daemon=True).start()
     return RedirectResponse("/dialer", status_code=303)
@@ -585,6 +610,19 @@ async def dialer_webhook(request: Request):
                 CAMPAIGN_STATUS[to_number] = "nao_atendeu"
 
     return JSONResponse({"ok": True})
+
+
+async def dialer_config(request: Request):
+    """Salva configurações da campanha."""
+    from starlette.responses import RedirectResponse
+    form = await request.form()
+    try:
+        CAMPAIGN_CONFIG["max_retries"] = int(form.get("max_retries", 3))
+        CAMPAIGN_CONFIG["retry_interval"] = int(form.get("retry_interval", 120))
+        CAMPAIGN_CONFIG["intervalo_chamadas"] = int(form.get("intervalo_chamadas", 8))
+    except ValueError:
+        pass
+    return RedirectResponse("/dialer", status_code=303)
 
 
 async def dialer_pause(request: Request):
@@ -717,6 +755,7 @@ if __name__ == "__main__":
             Route("/dialer", dialer_endpoint, methods=["GET"]),
             Route("/dialer/start", dialer_start, methods=["GET"]),
             Route("/dialer/pause", dialer_pause, methods=["GET"]),
+            Route("/dialer/config", dialer_config, methods=["POST"]),
             Route("/dialer/webhook", dialer_webhook, methods=["POST"]),
             Route("/dialer/upload", dialer_upload, methods=["POST"]),
         ]
