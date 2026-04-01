@@ -792,89 +792,99 @@ async def dialer_start(request: Request):
             import threading
             threading.Thread(target=decrement, daemon=True).start()
 
-    def run_campaign():
+    def ligar_com_retry(c):
+        """Gerencia ligação + retries para um único contato. Bloqueia até terminar."""
         import time
+        numero = c["numero"]
+        nome = c["nome"]
+        max_r = CAMPAIGN_CONFIG["max_retries"]
 
-        # Fila de retry: (numero, nome, tentativa, quando_tentar)
-        retry_queue = []
-
-        for c in list(CONTATOS_DIALER):
-            # Esperar se pausado
+        for tentativa in range(1, max_r + 1):
+            # Pausado?
             while CAMPAIGN_PAUSED:
                 time.sleep(1)
 
-            # Esperar se fora do horário
+            # Fora do horário?
             while not dentro_horario():
-                CAMPAIGN_STATUS[c["numero"]] = f"aguardando horário ({CAMPAIGN_CONFIG['horario_inicio']}h-{CAMPAIGN_CONFIG['horario_fim']}h)"
-                print(f"[HORÁRIO] Fora do horário permitido. Aguardando...")
+                CAMPAIGN_STATUS[numero] = f"aguardando horário ({CAMPAIGN_CONFIG['horario_inicio']}h-{CAMPAIGN_CONFIG['horario_fim']}h)"
                 time.sleep(60)
 
-            # Pular já finalizados ou qualificados
-            if CAMPAIGN_STATUS.get(c["numero"]) in ("atendeu", "sem_interesse", "qualificado ✅"):
-                continue
+            # Já finalizado por lead?
+            current = CAMPAIGN_STATUS.get(numero, "")
+            if "qualificado" in current or current == "sem_interesse":
+                return
 
-            # Verificar cooldown
-            cooldown_end = COOLDOWN_UNTIL.get(c["numero"], 0)
-            if time.time() < cooldown_end:
-                restante = int((cooldown_end - time.time()) / 3600)
-                CAMPAIGN_STATUS[c["numero"]] = f"cooldown ({restante}h)"
-                print(f"[COOLDOWN] {c['nome']} em cooldown por mais {restante}h")
-                continue
-
-            tentativa = CAMPAIGN_RETRIES.get(c["numero"], 0) + 1
-            CAMPAIGN_RETRIES[c["numero"]] = tentativa
-            max_r = CAMPAIGN_CONFIG["max_retries"]
-            CAMPAIGN_STATUS[c["numero"]] = f"discando ({tentativa}/{max_r})"
-
-            ok = fazer_ligacao(c["numero"], c["nome"])
-            if not ok:
-                CAMPAIGN_STATUS[c["numero"]] = "erro"
-
+            # Fazer a ligação
+            CAMPAIGN_RETRIES[numero] = tentativa
+            CAMPAIGN_STATUS[numero] = f"discando ({tentativa}/{max_r})"
             save_state()
-            time.sleep(8)
+            print(f"[DIALER] {nome} — tentativa {tentativa}/{max_r}")
 
-        # Processar retries
-        for c in list(CONTATOS_DIALER):
-            numero = c["numero"]
-            while True:
-                time.sleep(5)
-                status = CAMPAIGN_STATUS.get(numero, "")
-                tentativas = CAMPAIGN_RETRIES.get(numero, 0)
+            ok = fazer_ligacao(numero, nome)
+            if not ok:
+                CAMPAIGN_STATUS[numero] = "erro"
+                save_state()
+                break
 
-                # Não fazer nada enquanto a ligação ainda está ativa
-                if "discando" in status or "chamada" in status:
+            # Esperar o webhook confirmar resultado (timeout de 90s)
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                if CAMPAIGN_PAUSED:
+                    time.sleep(1)
                     continue
-
-                # Parar se finalizado
-                if status in ("atendeu", "sem_interesse") or "qualificado" in status:
+                st = CAMPAIGN_STATUS.get(numero, "")
+                # Terminou — webhook chegou
+                if st in ("nao_atendeu", "caixa_postal", "atendeu") or "qualificado" in st or st == "sem_interesse":
                     break
+                time.sleep(2)
 
-                # Esgotou tentativas
-                if tentativas >= CAMPAIGN_CONFIG["max_retries"]:
-                    CAMPAIGN_STATUS[numero] = f"esgotado ({tentativas} tentativas)"
+            # Verificar resultado final
+            st = CAMPAIGN_STATUS.get(numero, "")
+            if "qualificado" in st or st in ("atendeu", "sem_interesse"):
+                return  # sucesso
+
+            if st in ("nao_atendeu", "caixa_postal", "erro") or "discando" in st:
+                if tentativa < max_r:
+                    # Aguardar intervalo de retry
+                    print(f"[RETRY] {nome} — aguardando {CAMPAIGN_CONFIG['retry_interval']}s antes da tentativa {tentativa+1}")
+                    time.sleep(CAMPAIGN_CONFIG["retry_interval"])
+                else:
+                    # Esgotou
+                    CAMPAIGN_STATUS[numero] = f"esgotado ({tentativa} tentativas)"
                     dias = CAMPAIGN_CONFIG["cooldown_dias"]
                     COOLDOWN_UNTIL[numero] = time.time() + (dias * 86400)
-                    print(f"[COOLDOWN] {numero} em cooldown por {dias} dias após esgotar tentativas")
-                    break
+                    save_state()
+                    print(f"[ESGOTADO] {nome} após {tentativa} tentativas")
 
-                # Retry se não atendeu ou caixa postal
-                if status in ("nao_atendeu", "caixa_postal", "erro"):
-                    while CAMPAIGN_PAUSED:
-                        time.sleep(1)
+    def run_campaign():
+        import time
 
-                    # Verificar horário antes do retry
-                    while not dentro_horario():
-                        CAMPAIGN_STATUS[numero] = f"aguardando horário ({CAMPAIGN_CONFIG['horario_inicio']}h-{CAMPAIGN_CONFIG['horario_fim']}h)"
-                        time.sleep(60)
+        for c in list(CONTATOS_DIALER):
+            # Pausado?
+            while CAMPAIGN_PAUSED:
+                time.sleep(1)
 
-                    tentativa = tentativas + 1
-                    CAMPAIGN_RETRIES[numero] = tentativa
-                    max_r = CAMPAIGN_CONFIG["max_retries"]
-                    CAMPAIGN_STATUS[numero] = f"discando ({tentativa}/{max_r})"
-                    print(f"[RETRY] {c['nome']} — tentativa {tentativa}/{max_r}")
+            numero = c["numero"]
 
-                    fazer_ligacao(numero, c["nome"])
-                    time.sleep(CAMPAIGN_CONFIG["retry_interval"])
+            # Pular já finalizados
+            st = CAMPAIGN_STATUS.get(numero, "")
+            if "qualificado" in st or st in ("atendeu", "sem_interesse"):
+                continue
+
+            # Cooldown ativo?
+            cooldown_end = COOLDOWN_UNTIL.get(numero, 0)
+            if time.time() < cooldown_end:
+                restante = int((cooldown_end - time.time()) / 3600)
+                CAMPAIGN_STATUS[numero] = f"cooldown ({restante}h)"
+                save_state()
+                continue
+
+            # Ligar com retry (bloqueante por contato)
+            ligar_com_retry(c)
+
+            # Intervalo entre contatos diferentes
+            if not CAMPAIGN_PAUSED:
+                time.sleep(CAMPAIGN_CONFIG["intervalo_chamadas"])
 
     threading.Thread(target=run_campaign, daemon=True).start()
     return RedirectResponse("/dialer", status_code=303)
